@@ -1,0 +1,11 @@
+[package]
+name = "configory"
+version = "0.1.0"
+description = "Batteries included application config management"
+authors = ["Christian Duerr <contact@christianduerr.com>"]
+repository = "https://github.com/chrisduerr/configory"
+rust-version = "1.85.0"
+license = "GPL-3.0"
+edition = "2024"
+
+[dependencies]
