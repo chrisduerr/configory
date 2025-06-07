@@ -1,6 +1,6 @@
 [package]
 name = "configory"
-version = "0.1.0"
+version = "0.2.0"
 description = "Batteries included application config management"
 authors = ["Christian Duerr <contact@christianduerr.com>"]
 repository = "https://github.com/chrisduerr/configory"
