@@ -23,15 +23,20 @@ fn main() {
         },
         (Some("set"), Some("integer"), Some(value)) => {
             let value = i32::from_str(value).unwrap();
-            ipc.set(&["integer"], Some(value)).unwrap();
+            ipc.set(&["integer"], value).unwrap();
         },
+        (Some("reset"), Some("integer"), None) => ipc.reset(&["integer"]).unwrap(),
         (Some("get"), Some("text"), None) => {
             let value = ipc.get::<_, String>(&["text"]).unwrap();
             println!("{value:?}");
         },
         (Some("set"), Some("text"), Some(value)) => {
-            ipc.set(&["text"], Some(value)).unwrap();
+            ipc.set(&["text"], value).unwrap();
         },
-        _ => println!("USAGE: client <get|set> <integer|text> [VALUE]"),
+        (Some("reset"), Some("text"), None) => ipc.reset(&["text"]).unwrap(),
+        _ => {
+            println!("USAGE: client <get|reset> <integer|text>");
+            println!("       client <set> <integer|text> [VALUE]");
+        },
     }
 }

@@ -6,13 +6,23 @@
 use std::{env, fs};
 
 use configory::{Config, Event};
+use serde::Deserialize;
+use tempfile::tempdir;
+
+#[derive(Deserialize, Default, Debug)]
+#[serde(default)]
+struct MyConfig {
+    integer: i32,
+    text: String,
+}
 
 fn main() {
     // We set a custom config home to demonstrate initialization from a
     // configuration file. Traditionally this would be in
     // `~/.config/configory-example/configory-example.toml` or equivalent on
     // non-Linux platforms.
-    let fake_home = env::temp_dir().join("configory-example-home");
+    let tempdir = tempdir().unwrap();
+    let fake_home = tempdir.path().join("configory-example-home");
     unsafe { env::set_var("XDG_CONFIG_HOME", &*fake_home.to_string_lossy()) };
 
     // Write our example config.
@@ -49,7 +59,6 @@ fn main() {
 
 /// Print the current configuration values.
 fn print_config(config: &Config<()>) {
-    println!("CURRENT VALUES:");
-    println!("  integer: {:?}", config.get::<_, i32>(&["integer"]));
-    println!("  text: {:?}", config.get::<_, String>(&["text"]));
+    let my_config = config.get::<&str, MyConfig>(&[]).unwrap_or_default();
+    println!("{my_config:#?}");
 }

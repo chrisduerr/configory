@@ -40,7 +40,7 @@ const SOCKET_ID: &str = "configory-ipc";
 /// // Connect to the socket and change `option` to `3`.
 /// // This would typically be done from a separate process.
 /// let ipc = Ipc::client(socket_path);
-/// ipc.set(&["option"], Some(3)).unwrap();
+/// ipc.set(&["option"], 3).unwrap();
 ///
 /// // Access the new config value directly.
 /// let value = config.get::<_, i32>(&["option"]);
@@ -69,7 +69,7 @@ impl Ipc {
     /// use configory::ipc::Ipc;
     ///
     /// # let config = Config::<()>::new("configory").unwrap();
-    /// # config.set(&["option"], Some(3));
+    /// # config.set(&["option"], 3);
     /// #
     /// # let socket_path = config.ipc().unwrap().socket_path();
     /// let ipc = Ipc::client(socket_path);
@@ -196,6 +196,11 @@ impl Ipc {
                 values.write().unwrap().set(&path, value);
                 let _ = update_tx.send(Event::IpcChanged);
             },
+            // Clear the runtime portion of a configuration value.
+            IpcMessage::ResetConfig(path) => {
+                values.write().unwrap().reset(&path);
+                let _ = update_tx.send(Event::IpcChanged);
+            },
             // Get current config and write it to the socket.
             IpcMessage::GetConfig(path) => {
                 let value = values.read().unwrap().get(&path);
@@ -218,7 +223,7 @@ impl Ipc {
     /// use configory::ipc::Ipc;
     ///
     /// # let config = Config::<()>::new("configory").unwrap();
-    /// # config.set(&["option"], Some(3));
+    /// # config.set(&["option"], 3);
     /// #
     /// # let socket_path = config.ipc().unwrap().socket_path();
     /// #
@@ -261,23 +266,50 @@ impl Ipc {
     /// #
     /// let ipc = Ipc::client(socket_path);
     ///
-    /// // Setting an option to `Some(T)` overrides its runtime value.
-    /// ipc.set(&["option"], Some(3)).unwrap();
+    /// // Setting an option overrides its runtime value.
+    /// ipc.set(&["option"], 3).unwrap();
     /// let value = ipc.get::<_, i32>(&["option"]).unwrap();
     /// assert_eq!(value, Some(3));
-    ///
-    /// // Setting an option to `None` changes it back to its config value.
-    /// ipc.set(&["option"], None::<i32>).unwrap();
-    /// let value = ipc.get::<_, i32>(&["option"]).unwrap();
-    /// assert_eq!(value, None);
     /// ```
-    pub fn set<S, V>(&self, path: &[S], value: Option<V>) -> Result<(), Error>
+    pub fn set<S, V>(&self, path: &[S], value: V) -> Result<(), Error>
     where
         S: AsRef<str>,
         V: Into<Value>,
     {
         let path = path.iter().map(|s| s.as_ref().into()).collect::<Vec<_>>();
-        let message = IpcMessage::<()>::SetConfig(path, value.map(|v| v.into()));
+        let message = IpcMessage::<()>::SetConfig(path, value.into());
+        let _ = Self::send_message_internal::<_, ()>(&self.path, &message)?;
+        Ok(())
+    }
+
+    /// Clear the runtime portion of a configuration value.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use configory::Config;
+    /// use configory::ipc::Ipc;
+    ///
+    /// # let config = Config::<()>::new("configory").unwrap();
+    /// #
+    /// # let socket_path = config.ipc().unwrap().socket_path();
+    /// #
+    /// let ipc = Ipc::client(socket_path);
+    /// # ipc.set(&["option"], 3).unwrap();
+    ///
+    /// let value = ipc.get::<_, i32>(&["option"]).unwrap();
+    /// assert_eq!(value, Some(3));
+    ///
+    /// ipc.reset(&["option"]).unwrap();
+    /// let value = ipc.get::<_, i32>(&["option"]).unwrap();
+    /// assert_eq!(value, None);
+    /// ```
+    pub fn reset<S>(&self, path: &[S]) -> Result<(), Error>
+    where
+        S: AsRef<str>,
+    {
+        let path = path.iter().map(|s| s.as_ref().into()).collect::<Vec<_>>();
+        let message = IpcMessage::<()>::ResetConfig(path);
         let _ = Self::send_message_internal::<_, ()>(&self.path, &message)?;
         Ok(())
     }
@@ -376,7 +408,8 @@ impl Ipc {
 /// IPC messages.
 #[derive(Serialize, Deserialize)]
 enum IpcMessage<D> {
-    SetConfig(Vec<String>, Option<toml::Value>),
+    SetConfig(Vec<String>, toml::Value),
+    ResetConfig(Vec<String>),
     GetConfig(Vec<String>),
     User(D),
 }

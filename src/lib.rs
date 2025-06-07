@@ -12,7 +12,7 @@
 //! use configory::Config;
 //!
 //! let config = Config::<()>::new("configory").unwrap();
-//! config.set(&["option"], Some(3));
+//! config.set(&["option"], 3);
 //!
 //! assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
 //! ```
@@ -59,10 +59,40 @@
 //!
 //! // Set and retrieve a configuration value through the socket.
 //! let ipc = Ipc::client(socket_path);
-//! ipc.set(&["option"], Some(3)).unwrap();
+//! ipc.set(&["option"], 3).unwrap();
 //! let value = ipc.get::<_, i32>(&["option"]).unwrap();
 //! assert_eq!(value, Some(3));
 //! ```
+//!
+//! ## Struct Deserialization
+//!
+//! If you prefer accessing configuration values through a struct rather than
+//! using the dynamic syntax of [`Config::get`], you can deserialize the
+//! toplevel value into your struct:
+//!
+//! ```rust
+//! use configory::Config;
+//! use serde::Deserialize;
+//!
+//! #[derive(Deserialize, Default, PartialEq, Debug)]
+//! #[serde(default)]
+//! struct MyConfig {
+//!     field: String,
+//! }
+//!
+//! let config = Config::<()>::new("configory").unwrap();
+//!
+//! // Without configuration file, the default will be empty.
+//! let my_config = config.get::<&str, MyConfig>(&[]);
+//! assert_eq!(my_config, None);
+//!
+//! // Once changed wit the path syntax, the field will be uptaded.
+//! config.set(&["field"], "demo");
+//! let my_config = config.get::<&str, MyConfig>(&[]).unwrap();
+//! assert_eq!(my_config.field, String::from("demo"));
+//! ```
+
+#![deny(missing_docs)]
 
 use std::fs;
 use std::io::{self, ErrorKind as IoErrorKind};
@@ -87,7 +117,7 @@ mod thread;
 /// use configory::Config;
 ///
 /// let config = Config::<()>::new("configory").unwrap();
-/// config.set(&["option"], Some(3));
+/// config.set(&["option"], 3);
 ///
 /// assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
 /// ```
@@ -114,7 +144,7 @@ where
     ///
     /// let config = Config::<()>::new("configory").unwrap();
     /// #
-    /// # config.set(&["option"], Some(3));
+    /// # config.set(&["option"], 3);
     /// # assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
     /// ```
     pub fn new<S: AsRef<str>>(namespace: S) -> Result<Self, Error> {
@@ -135,7 +165,7 @@ where
     /// let options = Options::new("configory").notify(true);
     /// let config = Config::<()>::with_options(&options).unwrap();
     /// #
-    /// # config.set(&["option"], Some(3));
+    /// # config.set(&["option"], 3);
     /// # assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
     /// ```
     pub fn with_options(options: &Options) -> Result<Self, Error> {
@@ -182,7 +212,7 @@ where
     /// use configory::Config;
     ///
     /// let config = Config::<()>::new("configory").unwrap();
-    /// config.set(&["option"], Some(3));
+    /// config.set(&["option"], 3);
     ///
     /// let existing_value = config.get::<_, i32>(&["option"]);
     /// let missing_value = config.get::<_, i32>(&["missing"]);
@@ -200,9 +230,6 @@ where
 
     /// Override a configuration value.
     ///
-    /// Using [`None`] will reset the option back to its configuration file
-    /// value.
-    ///
     /// # Example
     ///
     /// ```rust
@@ -210,16 +237,37 @@ where
     ///
     /// let config = Config::<()>::new("configory").unwrap();
     ///
-    /// config.set(&["option"], Some(3));
+    /// config.set(&["option"], 3);
     /// #
     /// # assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
     /// ```
-    pub fn set<S, V>(&self, path: &[S], value: Option<V>)
+    pub fn set<S, V>(&self, path: &[S], value: V)
     where
         S: AsRef<str>,
         V: Into<Value>,
     {
         self.values.write().unwrap().set(path, value)
+    }
+
+    /// Clear the runtime portion of a configuration value.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use configory::Config;
+    ///
+    /// let config = Config::<()>::new("configory").unwrap();
+    /// # config.set(&["option"], 3);
+    ///
+    /// assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
+    /// config.reset(&["option"]);
+    /// assert_eq!(config.get::<_, i32>(&["option"]), None);
+    /// ```
+    pub fn reset<S>(&self, path: &[S])
+    where
+        S: AsRef<str>,
+    {
+        self.values.write().unwrap().reset(path)
     }
 
     /// Get the receiving end for the update channel.
@@ -346,11 +394,13 @@ impl<'a> Options<'a> {
 }
 
 /// Configuration value store.
-pub(crate) struct Values {
-    /// Latest configuration file value.
-    pub(crate) file: Value,
+struct Values {
+    /// Deserialized configuration file values.
+    file: Value,
     /// Current runtime overrides, like IPC config.
     runtime: Value,
+    /// File values merged with runtime overrides.
+    merged: Value,
 }
 
 impl Values {
@@ -361,39 +411,50 @@ impl Values {
 
     /// Create a new store from a parsed configuration file.
     fn from_config(file: Value) -> Self {
-        Self { file, runtime: Value::Table(Table::new()) }
+        let merged = file.clone();
+        Self { merged, file, runtime: Value::Table(Table::new()) }
+    }
+
+    /// Update configuration file values.
+    fn set_file(&mut self, file: Value) {
+        self.file = file;
+
+        // Apply config overrides to the file.
+        self.merged = self.file.clone();
+        toml_merge(&mut self.merged, self.runtime.clone());
     }
 
     /// Get the current value of a config option.
-    pub(crate) fn get<'de, S, T>(&self, path: &[S]) -> Option<T>
+    fn get<'de, S, T>(&self, path: &[S]) -> Option<T>
     where
         S: AsRef<str>,
         T: Deserialize<'de>,
     {
-        let value = match toml_get(&self.runtime, path) {
-            Some(value) => value,
-            None => toml_get(&self.file, path)?,
-        };
-        value.clone().try_into().ok()
+        toml_get(&self.merged, path)?.clone().try_into().ok()
     }
 
     /// Override the runtime portion of a configuration value.
-    ///
-    /// Using [`None`] will reset the option back to its configuration file
-    /// value.
-    pub(crate) fn set<S, V>(&mut self, path: &[S], value: Option<V>)
+    fn set<S, V>(&mut self, path: &[S], value: V)
     where
         S: AsRef<str>,
         V: Into<Value>,
     {
-        match value {
-            Some(value) => toml_insert(&mut self.runtime, path, value.into()),
-            None => {
-                if let Some(value) = toml_get_mut(&mut self.runtime, path) {
-                    *value = Value::Table(Table::new());
-                }
-            },
+        let value = value.into();
+        toml_insert(&mut self.merged, path, value.clone());
+        toml_insert(&mut self.runtime, path, value);
+    }
+
+    /// Clear the runtime portion of a configuration value.
+    fn reset<S>(&mut self, path: &[S])
+    where
+        S: AsRef<str>,
+    {
+        // Reset merged value to configuration file if available.
+        match toml_get(&self.file, path) {
+            Some(value) => toml_insert(&mut self.merged, path, value.clone()),
+            None => toml_remove(&mut self.merged, path),
         }
+        toml_remove(&mut self.runtime, path);
     }
 }
 
@@ -412,21 +473,6 @@ where
         (Value::Table(table), Some(segment)) => {
             let next_value = table.get(segment.as_ref())?;
             toml_get(next_value, &path[1..])
-        },
-        (Value::Table(table), None) if table.is_empty() => None,
-        (value, _) => Some(value),
-    }
-}
-
-/// Resolve a toml path key's value recursively.
-fn toml_get_mut<'a, S>(value: &'a mut Value, path: &[S]) -> Option<&'a mut Value>
-where
-    S: AsRef<str>,
-{
-    match (value, path.first()) {
-        (Value::Table(table), Some(segment)) => {
-            let next_value = table.get_mut(segment.as_ref())?;
-            toml_get_mut(next_value, &path[1..])
         },
         (Value::Table(table), None) if table.is_empty() => None,
         (value, _) => Some(value),
@@ -452,6 +498,56 @@ where
             toml_insert(next_value, path, inserting)
         },
         (value, None) => *value = inserting,
+    }
+}
+
+/// Remove a toml value.
+fn toml_remove<S>(value: &mut Value, path: &[S])
+where
+    S: AsRef<str>,
+{
+    // If the root is removed, just replace it with a new table.
+    if path.is_empty() {
+        *value = Value::Table(Table::new());
+        return;
+    }
+
+    // Values can only be removed from tables, so ignore everything else.
+    let table = match value {
+        Value::Table(table) => table,
+        _ => return,
+    };
+
+    // Remove value if it's in the current table.
+    if path.len() == 1 {
+        table.remove(path[0].as_ref());
+    }
+
+    // Recurse into the table, ignoring invalid paths.
+    if let Some(next_value) = table.get_mut(path[0].as_ref()) {
+        toml_remove(next_value, &path[1..]);
+    }
+}
+
+/// Merge two toml values together.
+fn toml_merge(base: &mut Value, new: Value) {
+    match (base, new) {
+        (Value::Table(base_table), Value::Table(new_table)) => {
+            for (key, new_value) in new_table.into_iter() {
+                match base_table.get_mut(&key) {
+                    Some(base_value) => toml_merge(base_value, new_value),
+                    None => _ = base_table.insert(key, new_value),
+                }
+            }
+        },
+        (Value::String(base_string), Value::String(new_string)) => *base_string = new_string,
+        (Value::Integer(base_int), Value::Integer(new_int)) => *base_int = new_int,
+        (Value::Float(base_float), Value::Float(new_float)) => *base_float = new_float,
+        (Value::Boolean(base_bool), Value::Boolean(new_bool)) => *base_bool = new_bool,
+        (Value::Datetime(base_date), Value::Datetime(new_date)) => *base_date = new_date,
+        (Value::Array(base_array), Value::Array(new_array)) => base_array.extend(new_array),
+        // On type mismatch, we just use the override.
+        (base, new) => *base = new,
     }
 }
 
@@ -510,6 +606,11 @@ pub(crate) fn load_config(path: &Path) -> Result<Value, Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
+    use serde::Deserialize;
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -517,13 +618,11 @@ mod tests {
         // Create test tree.
         let mut table = Table::new();
         table.insert("exists".into(), Value::Integer(3));
-        let mut value = Value::Table(table);
+        let value = Value::Table(table);
 
         // Run tests against both implementations.
-        for fun in [toml_get_shim, toml_get_mut_shim] {
-            assert_eq!(fun(&mut value, &["exists"]), Some(&Value::Integer(3)));
-            assert_eq!(fun(&mut value, &["missing"]), None);
-        }
+        assert_eq!(toml_get(&value, &["exists"]), Some(&Value::Integer(3)));
+        assert_eq!(toml_get(&value, &["missing"]), None);
     }
 
     #[test]
@@ -534,14 +633,12 @@ mod tests {
         let mut table = Table::new();
         table.insert("exists".into(), Value::Table(Table::new()));
         table.insert("exists2".into(), Value::Table(nested_table));
-        let mut value = Value::Table(table);
+        let value = Value::Table(table);
 
         // Run tests against both implementations.
-        for fun in [toml_get_shim, toml_get_mut_shim] {
-            assert_eq!(fun(&mut value, &["exists"]), None);
-            assert!(fun(&mut value, &["exists2"]).is_some());
-            assert_eq!(fun(&mut value, &["exists2", "nested"]), Some(&Value::Integer(3)));
-        }
+        assert_eq!(toml_get(&value, &["exists"]), None);
+        assert!(toml_get(&value, &["exists2"]).is_some());
+        assert_eq!(toml_get(&value, &["exists2", "nested"]), Some(&Value::Integer(3)));
     }
 
     #[test]
@@ -622,19 +719,118 @@ mod tests {
         assert_eq!(toml_get(&value, &["exists", "nested", "deep"]), Some(&Value::Integer(3)));
     }
 
-    /// Shim to match [`toml_get`] signature to [`toml_get_mut`].
-    fn toml_get_shim<'a, S>(value: &'a mut Value, path: &[S]) -> Option<&'a Value>
-    where
-        S: AsRef<str>,
-    {
-        toml_get(value, path)
+    #[test]
+    fn toml_remove_all() {
+        let mut table = Table::new();
+        table.insert("aoeu".into(), Value::Integer(3));
+        let mut value = Value::Table(table);
+
+        toml_remove::<&str>(&mut value, &[]);
+
+        assert_eq!(value, Value::Table(Table::new()));
     }
 
-    /// Shim to match [`toml_get`] signature to [`toml_get_mut`].
-    fn toml_get_mut_shim<'a, S>(value: &'a mut Value, path: &[S]) -> Option<&'a Value>
-    where
-        S: AsRef<str>,
-    {
-        toml_get_mut(value, path).map(|v| &*v)
+    #[test]
+    fn toml_remove_simple() {
+        let mut table = Table::new();
+        table.insert("aoeu".into(), Value::Integer(3));
+        table.insert("bbb".into(), Value::Integer(9));
+        let mut value = Value::Table(table);
+
+        toml_remove(&mut value, &["bbb"]);
+
+        let mut expected_table = Table::new();
+        expected_table.insert("aoeu".into(), Value::Integer(3));
+        let expected = Value::Table(expected_table);
+
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn toml_merge_tables() {
+        let mut table_a = Table::new();
+        table_a.insert("yyy".into(), Value::Integer(1));
+        table_a.insert("aoeu".into(), Value::Integer(3));
+        let mut a = Value::Table(table_a);
+
+        let mut table_b = Table::new();
+        table_b.insert("aoeu".into(), Value::Integer(0));
+        table_b.insert("xxx".into(), Value::Integer(9));
+        let b = Value::Table(table_b);
+
+        toml_merge(&mut a, b);
+
+        let mut expected_table = Table::new();
+        expected_table.insert("yyy".into(), Value::Integer(1));
+        expected_table.insert("aoeu".into(), Value::Integer(0));
+        expected_table.insert("xxx".into(), Value::Integer(9));
+        let expected = Value::Table(expected_table);
+
+        assert_eq!(a, expected);
+    }
+
+    #[test]
+    fn toml_merge_array() {
+        let mut table_a = Table::new();
+        table_a.insert("a".into(), Value::Array(vec![Value::Integer(3)]));
+        let mut a = Value::Table(table_a);
+
+        let mut table_b = Table::new();
+        table_b.insert("a".into(), Value::Array(vec![Value::Integer(9)]));
+        let b = Value::Table(table_b);
+
+        toml_merge(&mut a, b);
+
+        let mut expected_table = Table::new();
+        expected_table.insert("a".into(), Value::Array(vec![Value::Integer(3), Value::Integer(9)]));
+        let expected = Value::Table(expected_table);
+
+        assert_eq!(a, expected);
+    }
+
+    #[test]
+    fn toml_merge_mismatched_types() {
+        let mut table_a = Table::new();
+        table_a.insert("a".into(), Value::Integer(0));
+        let mut a = Value::Table(table_a);
+
+        let mut table_b = Table::new();
+        table_b.insert("a".into(), Value::String("test".into()));
+        let b = Value::Table(table_b);
+
+        toml_merge(&mut a, b);
+
+        let mut expected_table = Table::new();
+        expected_table.insert("a".into(), Value::String("test".into()));
+        let expected = Value::Table(expected_table);
+
+        assert_eq!(a, expected);
+    }
+
+    #[test]
+    fn config_get_merged() {
+        let test_id = "configory_config_get_merged";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Test {
+            integer: i32,
+            text: String,
+        }
+
+        // Create a temporary config with an initial value present.
+        let tempdir = tempdir().unwrap();
+        let fake_home = tempdir.path().join(test_id);
+        unsafe { env::set_var("XDG_CONFIG_HOME", &*fake_home.to_string_lossy()) };
+        let config_path = fake_home.join(test_id).join(format!("{test_id}.toml"));
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(&config_path, "integer = 13").unwrap();
+
+        // Load config and add a runtime option.
+        let config = Config::<()>::new(test_id).unwrap();
+        config.set(&["text"], "test");
+
+        // Ensure runtime and file values are merged in the root table.
+        let root = config.get::<&str, Test>(&[]).unwrap();
+        assert_eq!(root, Test { integer: 13, text: "test".into() });
     }
 }

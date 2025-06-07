@@ -95,7 +95,7 @@ where
                     // Reload config and update our value store.
                     match crate::load_config(&path) {
                         Ok(config) => {
-                            values.write().unwrap().file = config;
+                            values.write().unwrap().set_file(config);
 
                             // Notify consumer about file change.
                             let _ = update_tx.send(Event::FileChanged);
