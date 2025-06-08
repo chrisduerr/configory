@@ -47,9 +47,7 @@ impl Watcher {
         let mut paths = Vec::with_capacity(2);
         if let Ok(canonical) = path.canonicalize() {
             // Watch original path if path is a symlink.
-            if let Ok(metadata) = path.symlink_metadata()
-                && !metadata.file_type().is_symlink()
-            {
+            if path.symlink_metadata().is_ok_and(|meta| meta.file_type().is_symlink()) {
                 paths.push(path.clone());
             }
 
