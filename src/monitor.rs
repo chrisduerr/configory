@@ -93,6 +93,7 @@ impl Watcher {
                         EventKind::Any
                         | EventKind::Create(_)
                         | EventKind::Modify(_)
+                        | EventKind::Remove(_)
                         | EventKind::Other
                             if debounce_deadline.is_none() =>
                         {
