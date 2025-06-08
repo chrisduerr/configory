@@ -104,6 +104,7 @@ use serde::de::{Deserialize, DeserializeOwned};
 use toml::{Table, Value};
 
 use crate::ipc::{Ipc, Message};
+use crate::monitor::Watcher;
 
 pub mod ipc;
 mod monitor;
@@ -121,11 +122,13 @@ mod thread;
 ///
 /// assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
 /// ```
-pub struct Config<D> {
+pub struct Config<D = ()> {
     update_tx: Sender<Event<D>>,
     update_rx: Receiver<Event<D>>,
     values: Arc<RwLock<Values>>,
     ipc: Option<Ipc>,
+
+    _watcher: Option<Watcher>,
 }
 
 impl<D> Config<D>
@@ -192,13 +195,14 @@ where
         };
 
         // Spawn file monitor.
-        if let Some(path) = &path
-            && options.notify
-        {
-            monitor::watch(values.clone(), update_tx.clone(), path.into())?;
-        }
+        let _watcher = match &path {
+            Some(path) if options.notify => {
+                Watcher::new(values.clone(), update_tx.clone(), path.into())?
+            },
+            _ => None,
+        };
 
-        Ok(Self { update_tx, update_rx, values, ipc })
+        Ok(Self { update_tx, update_rx, values, ipc, _watcher })
     }
 
     /// Get the current value of a config option.
@@ -246,7 +250,8 @@ where
         S: AsRef<str>,
         V: Into<Value>,
     {
-        self.values.write().unwrap().set(path, value)
+        let value = value.into();
+        self.values.write().unwrap().set(path, value);
     }
 
     /// Clear the runtime portion of a configuration value.
@@ -394,6 +399,7 @@ impl<'a> Options<'a> {
 }
 
 /// Configuration value store.
+#[derive(Debug)]
 struct Values {
     /// Deserialized configuration file values.
     file: Value,
@@ -569,6 +575,7 @@ pub enum Error {
 }
 
 /// Configuration events.
+#[derive(Debug)]
 pub enum Event<D> {
     /// Configuration file change.
     FileChanged,

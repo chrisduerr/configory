@@ -130,6 +130,9 @@ impl Ipc {
     where
         D: DeserializeOwned + Send + 'static,
     {
+        #[cfg(feature = "log")]
+        log::info!("Starting config IPC");
+
         // Ensure we're not trying to use the same socket name multiple times.
         static PROCESS_SOCKET_COUNT: AtomicU32 = AtomicU32::new(0);
         let socket_index = PROCESS_SOCKET_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -422,6 +425,7 @@ enum IpcReply<R> {
 }
 
 /// IPC user message.
+#[derive(Debug)]
 pub struct Message<D> {
     stream: UnixStream,
     data: D,

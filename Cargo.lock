@@ -32,6 +32,7 @@ version = "0.2.0"
 dependencies = [
  "ctrlc",
  "dirs",
+ "log",
  "notify",
  "serde",
  "serde_json",
