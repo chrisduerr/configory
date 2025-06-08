@@ -14,7 +14,7 @@
 //! let config = Config::<()>::new("configory").unwrap();
 //! config.set(&["option"], 3);
 //!
-//! assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
+//! assert_eq!(config.get::<_, i32>(&["option"]), Ok(Some(3)));
 //! ```
 //!
 //! This will also automatically spawn an IPC server which allows configuration
@@ -84,11 +84,11 @@
 //!
 //! // Without configuration file, the default will be empty.
 //! let my_config = config.get::<&str, MyConfig>(&[]);
-//! assert_eq!(my_config, None);
+//! assert_eq!(my_config, Ok(None));
 //!
 //! // Once changed wit the path syntax, the field will be uptaded.
 //! config.set(&["field"], "demo");
-//! let my_config = config.get::<&str, MyConfig>(&[]).unwrap();
+//! let my_config = config.get::<&str, MyConfig>(&[]).unwrap().unwrap();
 //! assert_eq!(my_config.field, String::from("demo"));
 //! ```
 
@@ -120,7 +120,7 @@ mod thread;
 /// let config = Config::<()>::new("configory").unwrap();
 /// config.set(&["option"], 3);
 ///
-/// assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
+/// assert_eq!(config.get::<_, i32>(&["option"]), Ok(Some(3)));
 /// ```
 pub struct Config<D = ()> {
     update_tx: Sender<Event<D>>,
@@ -148,7 +148,7 @@ where
     /// let config = Config::<()>::new("configory").unwrap();
     /// #
     /// # config.set(&["option"], 3);
-    /// # assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
+    /// # assert_eq!(config.get::<_, i32>(&["option"]), Ok(Some(3)));
     /// ```
     pub fn new<S: AsRef<str>>(namespace: S) -> Result<Self, Error> {
         let options = Options::new(namespace.as_ref()).notify(true).ipc(true);
@@ -169,7 +169,7 @@ where
     /// let config = Config::<()>::with_options(&options).unwrap();
     /// #
     /// # config.set(&["option"], 3);
-    /// # assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
+    /// # assert_eq!(config.get::<_, i32>(&["option"]), Ok(Some(3)));
     /// ```
     pub fn with_options(options: &Options) -> Result<Self, Error> {
         let (update_tx, update_rx) = mpsc::channel();
@@ -207,8 +207,9 @@ where
 
     /// Get the current value of a config option.
     ///
-    /// This will return [`None`] if the requested does not exist, or does not
-    /// match the requested type.
+    /// This will return `Ok(None)` if the requested option does not exist, and
+    /// error if it does not match the requested type. This will never error
+    /// if `T` is [`toml::Value`].
     ///
     /// # Example
     ///
@@ -221,15 +222,19 @@ where
     /// let existing_value = config.get::<_, i32>(&["option"]);
     /// let missing_value = config.get::<_, i32>(&["missing"]);
     ///
-    /// assert_eq!(existing_value, Some(3));
-    /// assert_eq!(missing_value, None);
+    /// assert_eq!(existing_value, Ok(Some(3)));
+    /// assert_eq!(missing_value, Ok(None));
     /// ```
-    pub fn get<'de, S, T>(&self, path: &[S]) -> Option<T>
+    pub fn get<'de, S, T>(&self, path: &[S]) -> Result<Option<T>, toml::de::Error>
     where
         S: AsRef<str>,
         T: Deserialize<'de>,
     {
-        self.values.read().unwrap().get(path)
+        let value = self.values.read().unwrap().get(path).cloned();
+        match value {
+            Some(value) => Ok(Some(value.try_into()?)),
+            None => Ok(None),
+        }
     }
 
     /// Override a configuration value.
@@ -243,7 +248,7 @@ where
     ///
     /// config.set(&["option"], 3);
     /// #
-    /// # assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
+    /// # assert_eq!(config.get::<_, i32>(&["option"]), Ok(Some(3)));
     /// ```
     pub fn set<S, V>(&self, path: &[S], value: V)
     where
@@ -264,9 +269,9 @@ where
     /// let config = Config::<()>::new("configory").unwrap();
     /// # config.set(&["option"], 3);
     ///
-    /// assert_eq!(config.get::<_, i32>(&["option"]), Some(3));
+    /// assert_eq!(config.get::<_, i32>(&["option"]), Ok(Some(3)));
     /// config.reset(&["option"]);
-    /// assert_eq!(config.get::<_, i32>(&["option"]), None);
+    /// assert_eq!(config.get::<_, i32>(&["option"]), Ok(None));
     /// ```
     pub fn reset<S>(&self, path: &[S])
     where
@@ -431,12 +436,11 @@ impl Values {
     }
 
     /// Get the current value of a config option.
-    fn get<'de, S, T>(&self, path: &[S]) -> Option<T>
+    fn get<S>(&self, path: &[S]) -> Option<&toml::Value>
     where
         S: AsRef<str>,
-        T: Deserialize<'de>,
     {
-        toml_get(&self.merged, path)?.clone().try_into().ok()
+        toml_get(&self.merged, path)
     }
 
     /// Override the runtime portion of a configuration value.
@@ -837,7 +841,7 @@ mod tests {
         config.set(&["text"], "test");
 
         // Ensure runtime and file values are merged in the root table.
-        let root = config.get::<&str, Test>(&[]).unwrap();
-        assert_eq!(root, Test { integer: 13, text: "test".into() });
+        let root = config.get::<&str, Test>(&[]);
+        assert_eq!(root, Ok(Some(Test { integer: 13, text: "test".into() })));
     }
 }

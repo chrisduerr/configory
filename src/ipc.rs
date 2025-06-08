@@ -44,7 +44,7 @@ const SOCKET_ID: &str = "configory-ipc";
 ///
 /// // Access the new config value directly.
 /// let value = config.get::<_, i32>(&["option"]);
-/// assert_eq!(value, Some(3));
+/// assert_eq!(value, Ok(Some(3)));
 /// ```
 pub struct Ipc {
     path: PathBuf,
@@ -206,7 +206,7 @@ impl Ipc {
             },
             // Get current config and write it to the socket.
             IpcMessage::GetConfig(path) => {
-                let value = values.read().unwrap().get(&path);
+                let value = values.read().unwrap().get(&path).cloned();
                 write_reply(&mut stream, IpcReply::<()>::GetConfig(value))?;
             },
             // Notify user about new custom socket message.
@@ -236,13 +236,13 @@ impl Ipc {
     /// let valid = ipc.get::<_, i32>(&["option"]).unwrap();
     /// assert_eq!(valid, Some(3));
     ///
-    /// // Incorrect type returns `None`.
-    /// let valid = ipc.get::<_, String>(&["option"]).unwrap();
-    /// assert_eq!(valid, None);
+    /// // Incorrect type returns `Err`.
+    /// let invalid_type = ipc.get::<_, String>(&["option"]);
+    /// assert!(invalid_type.is_err());
     ///
     /// // Missing value returns `None`.
-    /// let valid = ipc.get::<_, String>(&["missing"]).unwrap();
-    /// assert_eq!(valid, None);
+    /// let missing = ipc.get::<_, String>(&["missing"]).unwrap();
+    /// assert_eq!(missing, None);
     /// ```
     pub fn get<'de, S, T>(&self, path: &[S]) -> Result<Option<T>, Error>
     where
@@ -252,7 +252,7 @@ impl Ipc {
         let path = path.iter().map(|s| s.as_ref().into()).collect::<Vec<_>>();
         let message = IpcMessage::<()>::GetConfig(path);
         match Self::send_message_internal::<_, ()>(&self.path, &message)? {
-            Some(IpcReply::GetConfig(value)) => Ok(value.and_then(|value| value.try_into().ok())),
+            Some(IpcReply::GetConfig(Some(value))) => Ok(value.try_into()?),
             _ => Ok(None),
         }
     }
