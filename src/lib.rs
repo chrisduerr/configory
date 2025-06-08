@@ -44,7 +44,7 @@
 //! }
 //! ```
 //!
-//! ## IPC client
+//! # IPC client
 //!
 //! The client side of the IPC interface is constructed from the socket path,
 //! which can be acquired using [`Config::ipc`] and [`Ipc::socket_path`].
@@ -64,7 +64,7 @@
 //! assert_eq!(value, Some(3));
 //! ```
 //!
-//! ## Struct Deserialization
+//! # Struct Deserialization
 //!
 //! If you prefer accessing configuration values through a struct rather than
 //! using the dynamic syntax of [`Config::get`], you can deserialize the
