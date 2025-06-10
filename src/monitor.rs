@@ -1,13 +1,13 @@
 //! File change monitor.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use crate::{Error, Event, Values, thread};
+use crate::{Config, Error, EventHandler, thread};
 
 /// Manual polling interval for platforms without file event support.
 const FALLBACK_POLLING_TIMEOUT: Duration = Duration::from_secs(1);
@@ -24,13 +24,13 @@ impl Watcher {
     ///
     /// This will automatically spawn two background threads to monitor for
     /// changes.
-    pub(crate) fn new<D>(
-        values: Arc<RwLock<Values>>,
-        update_tx: Sender<Event<D>>,
+    pub(crate) fn new<E, D>(
+        config: Config,
+        event_handler: Arc<E>,
         path: PathBuf,
     ) -> Result<Option<Self>, Error>
     where
-        D: Send + 'static,
+        E: EventHandler<D>,
     {
         // Ensure path is not a special file.
         if path.metadata().is_ok_and(|metadata| !metadata.file_type().is_file()) {
@@ -57,8 +57,8 @@ impl Watcher {
 
         // Create notify file monitor.
         let (tx, rx) = mpsc::channel();
-        let config = notify::Config::default().with_poll_interval(FALLBACK_POLLING_TIMEOUT);
-        let mut watcher = RecommendedWatcher::new(tx, config)?;
+        let notify_config = notify::Config::default().with_poll_interval(FALLBACK_POLLING_TIMEOUT);
+        let mut watcher = RecommendedWatcher::new(tx, notify_config)?;
 
         // Get monitored file's parent directories.
         let parents = paths.iter().map(|path| {
@@ -105,15 +105,12 @@ impl Watcher {
                     Err(RecvTimeoutError::Timeout) => {
                         // Reload config and update our value store.
                         match crate::load_config(&path) {
-                            Ok(config) => {
-                                values.write().unwrap().set_file(config);
+                            Ok(value) => {
+                                config.values.write().unwrap().set_file(value);
 
-                                // Notify consumer about file change.
-                                let _ = update_tx.send(Event::FileChanged);
+                                event_handler.file_changed(&config);
                             },
-                            Err(err) => {
-                                let _ = update_tx.send(Event::FileError(err));
-                            },
+                            Err(err) => event_handler.file_error(&config, err),
                         }
 
                         debounce_deadline = None;

@@ -4,37 +4,36 @@ use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, RwLock};
 use std::{env, fs, process};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
-use crate::{Error, Event, Values, thread};
+use crate::{Config, Error, EventHandler, thread};
 
 /// Socket file component to help with uniqueness.
 const SOCKET_ID: &str = "configory-ipc";
 
 /// Socket IPC.
 ///
-/// The IPC socket is automatically constructed by [`Config::new`] and can be
-/// accessed with [`Config::ipc`]. To connect from the other socket end you can
+/// The IPC socket is automatically constructed by [`Manager::new`] and can be
+/// accessed with [`Manager::ipc`]. To connect from the other socket end you can
 /// connect to [`Ipc::socket_path`] with [`Ipc::client`].
 ///
-/// [`Config::new`]: crate::Config::new
-/// [`Config::ipc`]: crate::Config::ipc
+/// [`Manager::new`]: crate::Manager::new
+/// [`Manager::ipc`]: crate::Manager::ipc
 ///
 /// # Example
 ///
 /// ```rust
-/// use configory::Config;
+/// use configory::Manager;
 /// use configory::ipc::Ipc;
 ///
 /// // Spawn the IPC socket and get its path.
-/// let config = Config::<()>::new("configory").unwrap();
+/// let config = Manager::new("configory", ()).unwrap();
 /// let socket_path = config.ipc().unwrap().socket_path();
 ///
 /// // Connect to the socket and change `option` to `3`.
@@ -65,10 +64,10 @@ impl Ipc {
     /// # Example
     ///
     /// ```rust
-    /// # use configory::Config;
+    /// # use configory::Manager;
     /// use configory::ipc::Ipc;
     ///
-    /// # let config = Config::<()>::new("configory").unwrap();
+    /// # let config = Manager::new("configory", ()).unwrap();
     /// # config.set(&["option"], 3);
     /// #
     /// # let socket_path = config.ipc().unwrap().socket_path();
@@ -86,19 +85,19 @@ impl Ipc {
     /// Get all IPC sockets available for this namespace.
     ///
     /// This can be used in programs where users cannot easily retrieve the
-    /// socket path, allowing the IPC client to talk to just retrieve data
-    /// from one random socket or broadcast updates to all of them.
+    /// socket path, allowing the IPC client to just retrieve data from one
+    /// random socket or broadcast updates to all of them.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use configory::Config;
+    /// use configory::Manager;
     /// use configory::ipc::Ipc;
     ///
     /// // Start multiple IPC servers with two separate namespaces.
-    /// let config_a = Config::<()>::new("configory-all").unwrap();
-    /// let config_b = Config::<()>::new("configory-all").unwrap();
-    /// let other = Config::<()>::new("other").unwrap();
+    /// let config_a = Manager::new("configory-all", ()).unwrap();
+    /// let config_b = Manager::new("configory-all", ()).unwrap();
+    /// let other = Manager::new("other", ()).unwrap();
     ///
     /// // Get all available IPC sockets for the `configory-all` namespace.
     /// let ipcs = Ipc::all("configory-all");
@@ -122,13 +121,14 @@ impl Ipc {
     }
 
     /// Create and listen on an IPC socket.
-    pub(crate) fn listen<D>(
-        values: Arc<RwLock<Values>>,
-        update_tx: Sender<Event<D>>,
+    pub(crate) fn listen<E, D>(
+        config: Config,
         namespace: &str,
+        event_handler: Arc<E>,
     ) -> Result<Self, Error>
     where
-        D: DeserializeOwned + Send + 'static,
+        E: EventHandler<D>,
+        D: DeserializeOwned,
     {
         #[cfg(feature = "log")]
         log::info!("Starting config IPC");
@@ -152,7 +152,7 @@ impl Ipc {
         thread::spawn_named("ipc listener", move || {
             let mut buffer = String::new();
             for stream in listener.incoming().filter_map(Result::ok) {
-                let _ = Self::handle_message(&values, &update_tx, stream, &mut buffer);
+                let _ = Self::handle_message(&config, &event_handler, stream, &mut buffer);
             }
         });
 
@@ -164,9 +164,9 @@ impl Ipc {
     /// # Example
     ///
     /// ```rust
-    /// use configory::Config;
+    /// use configory::Manager;
     ///
-    /// let config = Config::<()>::new("configory").unwrap();
+    /// let config = Manager::new("configory", ()).unwrap();
     /// let socket_path = config.ipc().unwrap().socket_path();
     /// ```
     pub fn socket_path(&self) -> &Path {
@@ -176,13 +176,14 @@ impl Ipc {
     /// Handle a new socket message.
     ///
     /// Returns `true` if the socket should be shut down.
-    fn handle_message<D>(
-        values: &Arc<RwLock<Values>>,
-        update_tx: &Sender<Event<D>>,
+    fn handle_message<E, D>(
+        config: &Config,
+        event_handler: &Arc<E>,
         mut stream: UnixStream,
         buffer: &mut String,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
+        E: EventHandler<D>,
         D: DeserializeOwned,
     {
         // Read the message content to our buffer.
@@ -196,23 +197,23 @@ impl Ipc {
         match message {
             // Override runtime config option.
             IpcMessage::SetConfig(path, value) => {
-                values.write().unwrap().set(&path, value);
-                let _ = update_tx.send(Event::IpcChanged);
+                config.values.write().unwrap().set(&path, value);
+                event_handler.ipc_changed(config);
             },
             // Clear the runtime portion of a configuration value.
             IpcMessage::ResetConfig(path) => {
-                values.write().unwrap().reset(&path);
-                let _ = update_tx.send(Event::IpcChanged);
+                config.values.write().unwrap().reset(&path);
+                event_handler.ipc_changed(config);
             },
             // Get current config and write it to the socket.
             IpcMessage::GetConfig(path) => {
-                let value = values.read().unwrap().get(&path).cloned();
+                let value = config.values.read().unwrap().get(&path).cloned();
                 write_reply(&mut stream, IpcReply::<()>::GetConfig(value))?;
             },
             // Notify user about new custom socket message.
             IpcMessage::User(data) => {
                 let message = Message { stream, data };
-                let _ = update_tx.send(Event::Ipc(message));
+                event_handler.ipc_message(config, message);
             },
         }
 
@@ -222,10 +223,10 @@ impl Ipc {
     /// Get a config option through IPC.
     ///
     /// ```rust
-    /// use configory::Config;
+    /// use configory::Manager;
     /// use configory::ipc::Ipc;
     ///
-    /// # let config = Config::<()>::new("configory").unwrap();
+    /// # let config = Manager::new("configory", ()).unwrap();
     /// # config.set(&["option"], 3);
     /// #
     /// # let socket_path = config.ipc().unwrap().socket_path();
@@ -260,10 +261,10 @@ impl Ipc {
     /// Set a config option through IPC.
     ///
     /// ```rust
-    /// use configory::Config;
+    /// use configory::Manager;
     /// use configory::ipc::Ipc;
     ///
-    /// # let config = Config::<()>::new("configory").unwrap();
+    /// # let config = Manager::new("configory", ()).unwrap();
     /// #
     /// # let socket_path = config.ipc().unwrap().socket_path();
     /// #
@@ -290,10 +291,10 @@ impl Ipc {
     /// # Example
     ///
     /// ```rust
-    /// use configory::Config;
+    /// use configory::Manager;
     /// use configory::ipc::Ipc;
     ///
-    /// # let config = Config::<()>::new("configory").unwrap();
+    /// # let config = Manager::new("configory", ()).unwrap();
     /// #
     /// # let socket_path = config.ipc().unwrap().socket_path();
     /// #
@@ -323,26 +324,25 @@ impl Ipc {
     /// unrelated to configuration.
     ///
     /// ```rust
-    /// use std::thread;
-    ///
     /// use configory::ipc::{Ipc, Message};
-    /// use configory::{Config, Event};
+    /// use configory::{Config, EventHandler, Manager};
     ///
-    /// # let config = Config::<String>::new("configory").unwrap();
-    /// #
-    /// # let socket_path = config.ipc().unwrap().socket_path();
-    /// #
-    /// let ipc = Ipc::client(socket_path);
+    /// /// Event handler for our custom IPC event.
+    /// struct MyEventHandler;
     ///
-    /// // Reply to the next IPC message on a separate thread.
-    /// thread::spawn(move || {
-    ///     if let Ok(Event::Ipc(mut message)) = config.update_rx().recv() {
+    /// impl EventHandler<String> for MyEventHandler {
+    ///     /// Reply to IPC messages by appending ` was received` to the message.
+    ///     fn ipc_message(&self, _config: &Config, mut message: Message<String>) {
     ///         let reply = format!("{} was received", message.data());
     ///         message.reply(&reply).unwrap();
     ///     }
-    /// });
+    /// }
+    ///
+    /// // Create a config manager with our IPC event handler.
+    /// let manager = Manager::new("configory", MyEventHandler).unwrap();
     ///
     /// // Send our message and check that the reply matches what we expect.
+    /// let ipc = manager.ipc().unwrap();
     /// let reply = ipc.send_message::<_, String>(&String::from("my message")).unwrap();
     /// assert_eq!(reply, Some("my message was received".into()));
     /// ```
@@ -437,32 +437,34 @@ impl<D> Message<D> {
         &self.data
     }
 
-    /// Get the message's content.
+    /// Take ownership over the message's content.
     pub fn into_data(self) -> D {
         self.data
     }
 
     /// Send an IPC reply.
     ///
-    /// ```rust
-    /// # use std::thread;
-    /// #
-    /// use configory::ipc::{Ipc, Message};
-    /// use configory::{Config, Event};
+    /// See [`Ipc::send_message`] for sending custom IPC messages over the
+    /// configuration socket.
     ///
-    /// # let config = Config::<String>::new("configory").unwrap();
-    /// #
-    /// # let socket_path = config.ipc().unwrap().socket_path().to_path_buf();
-    /// # thread::spawn(move || {
-    /// #   let ipc = Ipc::client(socket_path);
-    /// #   let reply = ipc.send_message::<_, String>(&String::from("my message")).unwrap();
-    /// # });
-    /// #
-    /// // Reply to the first IPC message.
-    /// if let Ok(Event::Ipc(mut message)) = config.update_rx().recv() {
-    ///     let reply = format!("{} was received", message.data());
-    ///     message.reply(&reply).unwrap();
+    /// ```rust
+    /// # use configory::{Config, Manager};
+    /// use configory::EventHandler;
+    /// use configory::ipc::Message;
+    ///
+    /// struct MyEventHandler;
+    ///
+    /// impl EventHandler<String> for MyEventHandler {
+    ///     fn ipc_message(&self, _config: &Config, mut message: Message<String>) {
+    ///         let reply = format!("{} was received", message.data());
+    ///         message.reply(&reply).unwrap();
+    ///     }
     /// }
+    /// #
+    /// # let manager = Manager::new("configory", MyEventHandler).unwrap();
+    /// # let ipc = manager.ipc().unwrap();
+    /// # let reply = ipc.send_message::<_, String>(&String::from("my message")).unwrap();
+    /// # assert_eq!(reply, Some("my message was received".into()));
     /// ```
     pub fn reply<R>(&mut self, reply: &R) -> Result<(), ReplyError>
     where

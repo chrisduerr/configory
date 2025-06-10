@@ -5,8 +5,10 @@
 
 use std::{env, fs};
 
-use configory::{Config, Event};
+use configory::{Config, EventHandler, Manager};
 use serde::Deserialize;
+use signal_hook::consts::signal::{SIGINT, SIGQUIT, SIGTERM};
+use signal_hook::iterator::Signals;
 use tempfile::tempdir;
 
 #[derive(Deserialize, Default, Debug)]
@@ -32,33 +34,31 @@ fn main() {
 
     // Create a new config.
     //
-    // This will automatically source
-    // `~/.config/configory-example/configory-example.toml` or equivalent on
-    // other platforms.
-    let config = Config::<()>::new("configory-example").unwrap();
-
-    // Setup signal handler for ctrl+c.
-    let ipc_sender = config.update_tx().clone();
-    ctrlc::set_handler(move || {
-        let _ = ipc_sender.send(Event::User(()));
-    })
-    .unwrap();
+    // This will automatically source the temporary config we just created.
+    let manager = Manager::new("configory-example", ConfigEventHandler).unwrap();
 
     // Print initial configuration state.
-    print_config(&config);
+    print_config(&manager);
 
-    // Print config whenever a change event is received.
-    while let Ok(event) = config.update_rx().recv() {
-        match event {
-            Event::FileChanged | Event::IpcChanged => print_config(&config),
-            Event::FileError(_) | Event::Ipc(_) => unreachable!(),
-            Event::User(()) => break,
-        }
+    // Wait for shutdown.
+    let mut signals = Signals::new([SIGINT, SIGTERM, SIGQUIT]).unwrap();
+    signals.wait();
+}
+
+/// Asynchronous configuraton file change handler.
+struct ConfigEventHandler;
+impl EventHandler<()> for ConfigEventHandler {
+    fn file_changed(&self, config: &Config) {
+        print_config(config);
+    }
+
+    fn ipc_changed(&self, config: &Config) {
+        print_config(config);
     }
 }
 
 /// Print the current configuration values.
-fn print_config(config: &Config<()>) {
-    let my_config = config.get::<&str, MyConfig>(&[]).unwrap_or_default();
+fn print_config(config: &Config) {
+    let my_config = config.get::<&str, MyConfig>(&[]).unwrap().unwrap_or_default();
     println!("{my_config:#?}");
 }
