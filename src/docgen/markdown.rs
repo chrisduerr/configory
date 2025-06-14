@@ -144,10 +144,13 @@ impl Markdown {
                 _ => &field.doc,
             };
 
+            // Ensure newlines don't break our pretty tables.
+            let doc = doc.replace("\n", "<br>");
+
             markdown.push('|');
             markdown.push_str(&field.ident);
             markdown.push('|');
-            markdown.push_str(doc);
+            markdown.push_str(&doc);
             markdown.push('|');
             markdown.push_str(&leaf.type_name);
             markdown.push_str("|`");
@@ -397,6 +400,28 @@ documentation.
 |Name|Description|Type|Default|
 |-|-|-|-|
 |field|Some random field|integer|`0`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
+    #[test]
+    fn multiline_field_doc() {
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Test {
+            /// Some random field.
+            ///
+            /// With loads of doc.
+            field: u8,
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|field|Some random field.<br><br>With loads of doc.|integer|`0`|
 ";
 
         let markdown = Markdown::new().format::<Test>();
