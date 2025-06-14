@@ -8,10 +8,17 @@ rust-version = "1.85.0"
 license = "GPL-3.0"
 edition = "2024"
 
+[workspace]
+members = [
+    "configory_derive",
+]
+
 [features]
 log = ["dep:log"]
+docgen = ["dep:configory_derive"]
 
 [dependencies]
+configory_derive = { version = "0.1.0", path = "./configory_derive", optional = true }
 dirs = "6.0.0"
 log = { version = "0.4.27", optional = true }
 notify = "8.0.0"

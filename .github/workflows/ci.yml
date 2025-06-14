@@ -12,12 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: Stable
-        run: cargo test --locked
+        run: cargo test --locked --all-features --workspace
       - name: Oldstable
         run: |
           oldstable=$(cat Cargo.toml | grep "rust-version" | sed 's/.*"\(.*\)".*/\1/')
           rustup toolchain install --profile minimal $oldstable
-          cargo +$oldstable test --locked
+          cargo +$oldstable test --locked --all-features --workspace
       - name: Clippy
         run: |
           rustup component add clippy
@@ -29,4 +29,4 @@ jobs:
       - name: Unlocked
         run: |
           rm Cargo.lock
-          cargo test
+          cargo test --all-features --workspace

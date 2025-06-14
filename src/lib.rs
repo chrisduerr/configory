@@ -120,6 +120,8 @@ use toml::{Table, Value};
 use crate::ipc::{Ipc, Message};
 use crate::monitor::Watcher;
 
+#[cfg(feature = "docgen")]
+pub mod docgen;
 pub mod ipc;
 mod monitor;
 mod thread;
