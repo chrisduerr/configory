@@ -40,6 +40,7 @@ dependencies = [
 name = "configory_derive"
 version = "0.1.0"
 dependencies = [
+ "configory",
  "proc-macro2",
  "quote",
  "syn",
