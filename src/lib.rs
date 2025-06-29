@@ -111,10 +111,11 @@
 use std::fs;
 use std::io::{self, ErrorKind as IoErrorKind};
 use std::ops::Deref;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use serde::de::{Deserialize, DeserializeOwned};
+use tempfile::NamedTempFile;
 use toml::{Table, Value};
 
 use crate::ipc::{Ipc, Message};
@@ -192,16 +193,16 @@ impl Manager {
         D: DeserializeOwned,
     {
         // Parse initial configuration file.
-        let path = dirs::config_dir()
+        let mut path = dirs::config_dir()
             .map(|dir| dir.join(options.namespace).join(format!("{}.toml", options.namespace)));
         let config = match path.as_ref().map(|path| load_config(path)) {
-            Some(Ok(config_file)) => Config::from_config(config_file),
+            Some(Ok(config_file)) => Config::from_config(config_file, path.clone()),
             Some(Err(err)) => {
-                let config = Config::new();
+                let config = Config::new(path.clone());
                 event_handler.file_error(&config, err);
                 config
             },
-            None => Config::new(),
+            None => Config::new(path.clone()),
         };
 
         let event_handler = Arc::new(event_handler);
@@ -214,10 +215,8 @@ impl Manager {
         };
 
         // Spawn file monitor.
-        let _watcher = match &path {
-            Some(path) if options.notify => {
-                Watcher::new(config.clone(), event_handler, path.into())?
-            },
+        let _watcher = match path.take() {
+            Some(path) if options.notify => Watcher::new(config.clone(), event_handler, path)?,
             _ => None,
         };
 
@@ -257,17 +256,18 @@ impl Deref for Manager {
 #[derive(Clone)]
 pub struct Config {
     pub(crate) values: Arc<RwLock<Values>>,
+    path: Option<PathBuf>,
 }
 
 impl Config {
     /// Create a new empty store.
-    fn new() -> Self {
-        Self::from_config(Value::Table(Table::new()))
+    fn new(path: Option<PathBuf>) -> Self {
+        Self::from_config(Value::Table(Table::new()), path)
     }
 
     /// Create a new store from a parsed configuration file.
-    fn from_config(value: Value) -> Self {
-        Self { values: Arc::new(RwLock::new(Values::new(value))) }
+    fn from_config(value: Value, path: Option<PathBuf>) -> Self {
+        Self { path, values: Arc::new(RwLock::new(Values::new(value))) }
     }
 
     /// Get the current value of a config option.
@@ -347,6 +347,47 @@ impl Config {
         S: AsRef<str>,
     {
         self.values.write().unwrap().reset(path)
+    }
+
+    /// Persist the current runtime config to the config file.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use configory::Manager;
+    ///
+    /// # let tempdir = tempfile::tempdir().unwrap();
+    /// # let fake_home = tempdir.path().join("configory-docs-persist");
+    /// # unsafe { std::env::set_var("XDG_CONFIG_HOME", &*fake_home.to_string_lossy()) };
+    ///
+    /// let manager = Manager::new("configory", ()).unwrap();
+    /// manager.set(&["option"], 3);
+    /// manager.persist().unwrap();
+    ///
+    /// # let config_path = fake_home.join("configory").join("configory.toml");
+    /// # let config = std::fs::read_to_string(&config_path).unwrap();
+    /// # assert_eq!(&config, "option = 3\n");
+    /// ```
+    pub fn persist(&self) -> Result<(), Error> {
+        let path = match &self.path {
+            Some(path) => path,
+            None => return Err(Error::NoConfigDir),
+        };
+
+        // Ensure config directory exists.
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent)?;
+
+        // Write updated config to tempfile.
+        let tempfile = NamedTempFile::new_in(parent)?;
+        let merged = &self.values.read().unwrap().merged;
+        let toml = toml::to_string_pretty(merged)?;
+        fs::write(tempfile.path(), toml)?;
+
+        // Move config into place.
+        tempfile.persist(path)?;
+
+        Ok(())
     }
 }
 
@@ -615,9 +656,15 @@ fn toml_merge(base: &mut Value, new: Value) {
 /// Configuration errors.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// Failed to atomically replace config.
+    #[error("{0}")]
+    AtomicReplace(#[from] tempfile::PersistError),
     /// Configuration file deserialization failed.
     #[error("{0}")]
     ConfigDeserialize(#[from] toml::de::Error),
+    /// Configuration file serialization failed.
+    #[error("{0}")]
+    ConfigSerialize(#[from] toml::ser::Error),
     /// IPC message deserialization failed.
     #[error("{0}")]
     IpcDeserialize(#[from] serde_json::Error),
@@ -627,6 +674,9 @@ pub enum Error {
     /// IO error.
     #[error("{0}")]
     Io(#[from] io::Error),
+    /// Unable to resolve get system's config directory.
+    #[error("could not determine system config dir")]
+    NoConfigDir,
 }
 
 /// Deserialize a configuration file.
