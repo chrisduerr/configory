@@ -429,6 +429,26 @@ documentation.
         assert_eq(markdown, expected);
     }
 
+    #[test]
+    fn option() {
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Test {
+            /// Some optional field.
+            field: Option<u8>,
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|field|Some optional field|integer|`null`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
     fn assert_eq(markdown: String, expected: &'static str) {
         if markdown != expected {
             #[rustfmt::skip]

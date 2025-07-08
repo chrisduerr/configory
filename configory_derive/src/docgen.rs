@@ -167,7 +167,7 @@ fn field_inserts<T>(fields: &Punctuated<Field, T>) -> (TokenStream2, bool) {
             None => {
                 stream.extend(quote! {
                     table.push(configory::docgen::Field {
-                        doc_type: #ty::doc_type(),
+                        doc_type: <#ty>::doc_type(),
                         ident: #literal.into(),
                         default: #default,
                         doc: #doc.into(),

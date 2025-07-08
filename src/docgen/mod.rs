@@ -61,6 +61,7 @@
 //! ```
 
 use std::borrow::Cow;
+use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 
 /// This can be used to automatically derive [`Docgen`] for a type.
@@ -306,3 +307,16 @@ impl_simple_type!(String, &str, "text");
 impl_simple_type!(f32, f64, "float");
 impl_simple_type!(char, "character");
 impl_simple_type!(bool, "boolean");
+
+impl<T: Docgen + Debug> Docgen for Option<T> {
+    fn doc_type() -> DocType {
+        T::doc_type()
+    }
+
+    fn format(&self) -> String {
+        match self {
+            Some(value) => format!("{:?}", value),
+            None => "null".into(),
+        }
+    }
+}
