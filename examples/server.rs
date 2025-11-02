@@ -47,7 +47,9 @@ fn main() {
 
 /// Asynchronous configuraton file change handler.
 struct ConfigEventHandler;
-impl EventHandler<()> for ConfigEventHandler {
+impl EventHandler for ConfigEventHandler {
+    type MessageData = ();
+
     fn file_changed(&self, config: &Config) {
         print_config(config);
     }

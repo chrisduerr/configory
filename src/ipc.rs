@@ -121,14 +121,14 @@ impl Ipc {
     }
 
     /// Create and listen on an IPC socket.
-    pub(crate) fn listen<E, D>(
+    pub(crate) fn listen<E>(
         config: Config,
         namespace: &str,
         event_handler: Arc<E>,
     ) -> Result<Self, Error>
     where
-        E: EventHandler<D>,
-        D: DeserializeOwned,
+        E: EventHandler,
+        <E as EventHandler>::MessageData: DeserializeOwned,
     {
         #[cfg(feature = "log")]
         log::info!("Starting config IPC");
@@ -176,22 +176,22 @@ impl Ipc {
     /// Handle a new socket message.
     ///
     /// Returns `true` if the socket should be shut down.
-    fn handle_message<E, D>(
+    fn handle_message<E>(
         config: &Config,
         event_handler: &Arc<E>,
         mut stream: UnixStream,
         buffer: &mut String,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
-        E: EventHandler<D>,
-        D: DeserializeOwned,
+        E: EventHandler,
+        <E as EventHandler>::MessageData: DeserializeOwned,
     {
         // Read the message content to our buffer.
         buffer.clear();
         stream.read_to_string(buffer)?;
 
         // Attempt to deserialize the message.
-        let message: IpcMessage<D> = serde_json::from_str(buffer)?;
+        let message: IpcMessage<E::MessageData> = serde_json::from_str(buffer)?;
 
         // Process IPC event.
         match message {
@@ -330,7 +330,9 @@ impl Ipc {
     /// /// Event handler for our custom IPC event.
     /// struct MyEventHandler;
     ///
-    /// impl EventHandler<String> for MyEventHandler {
+    /// impl EventHandler for MyEventHandler {
+    ///     type MessageData = String;
+    ///
     ///     /// Reply to IPC messages by appending ` was received` to the message.
     ///     fn ipc_message(&self, _config: &Config, mut message: Message<String>) {
     ///         let reply = format!("{} was received", message.data());
@@ -454,7 +456,9 @@ impl<D> Message<D> {
     ///
     /// struct MyEventHandler;
     ///
-    /// impl EventHandler<String> for MyEventHandler {
+    /// impl EventHandler for MyEventHandler {
+    ///     type MessageData = String;
+    ///
     ///     fn ipc_message(&self, _config: &Config, mut message: Message<String>) {
     ///         let reply = format!("{} was received", message.data());
     ///         message.reply(&reply).unwrap();

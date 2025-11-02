@@ -37,7 +37,9 @@
 //!     changes: Arc<AtomicU8>,
 //! }
 //!
-//! impl EventHandler<()> for MyEventHandler {
+//! impl EventHandler for MyEventHandler {
+//!     type MessageData = ();
+//!
 //!     fn ipc_changed(&self, _config: &Config) {
 //!         self.changes.fetch_add(1, Ordering::Relaxed);
 //!     }
@@ -139,14 +141,19 @@ mod thread;
 ///
 /// assert_eq!(manager.get::<_, i32>(&["option"]), Ok(Some(3)));
 /// ```
-pub struct Manager {
+pub struct Manager<E> {
     config: Config,
     ipc: Option<Ipc>,
 
-    _watcher: Option<Watcher>,
+    watcher: Option<Watcher>,
+    event_handler: Arc<E>,
+    notify: bool,
 }
 
-impl Manager {
+impl<E> Manager<E>
+where
+    E: EventHandler,
+{
     /// Initialize the configuration manager.
     ///
     /// This will spawn multiple background threads and create socket files.
@@ -162,10 +169,9 @@ impl Manager {
     /// # manager.set(&["option"], 3);
     /// # assert_eq!(manager.get::<_, i32>(&["option"]), Ok(Some(3)));
     /// ```
-    pub fn new<S: AsRef<str>, E, D>(namespace: S, event_handler: E) -> Result<Self, Error>
+    pub fn new<S: AsRef<str>>(namespace: S, event_handler: E) -> Result<Self, Error>
     where
-        E: EventHandler<D>,
-        D: DeserializeOwned,
+        <E as EventHandler>::MessageData: DeserializeOwned,
     {
         let options = Options::new(namespace.as_ref()).notify(true).ipc(true);
         Self::with_options(&options, event_handler)
@@ -187,10 +193,9 @@ impl Manager {
     /// # manager.set(&["option"], 3);
     /// # assert_eq!(manager.get::<_, i32>(&["option"]), Ok(Some(3)));
     /// ```
-    pub fn with_options<E, D>(options: &Options, event_handler: E) -> Result<Self, Error>
+    pub fn with_options(options: &Options, event_handler: E) -> Result<Self, Error>
     where
-        E: EventHandler<D>,
-        D: DeserializeOwned,
+        <E as EventHandler>::MessageData: DeserializeOwned,
     {
         // Parse initial configuration file.
         let mut path = dirs::config_dir()
@@ -215,12 +220,14 @@ impl Manager {
         };
 
         // Spawn file monitor.
-        let _watcher = match path.take() {
-            Some(path) if options.notify => Watcher::new(config.clone(), event_handler, path)?,
+        let watcher = match path.take() {
+            Some(path) if options.notify => {
+                Watcher::new(config.clone(), event_handler.clone(), path)?
+            },
             _ => None,
         };
 
-        Ok(Self { _watcher, config, ipc })
+        Ok(Self { notify: options.notify, event_handler, watcher, config, ipc })
     }
 
     /// Get an IPC handle.
@@ -242,9 +249,64 @@ impl Manager {
     pub fn ipc(&self) -> Option<&Ipc> {
         self.ipc.as_ref()
     }
+
+    /// Persist the current runtime config to the config file.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use configory::Manager;
+    ///
+    /// # let tempdir = tempfile::tempdir().unwrap();
+    /// # let fake_home = tempdir.path().join("configory-docs-persist");
+    /// # unsafe { std::env::set_var("XDG_CONFIG_HOME", &*fake_home.to_string_lossy()) };
+    ///
+    /// let mut manager = Manager::new("configory", ()).unwrap();
+    /// manager.set(&["option"], 3);
+    /// manager.persist().unwrap();
+    ///
+    /// # let config_path = fake_home.join("configory").join("configory.toml");
+    /// # let config = std::fs::read_to_string(&config_path).unwrap();
+    /// # assert_eq!(&config, "option = 3\n");
+    /// ```
+    pub fn persist(&mut self) -> Result<(), Error> {
+        let path = match &self.config.path {
+            Some(path) => path,
+            None => return Err(Error::NoConfigDir),
+        };
+
+        // Ensure config directory exists.
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent)?;
+
+        // Write updated config to tempfile.
+        let tempfile = NamedTempFile::new_in(parent)?;
+        let mut values = self.config.values.write().unwrap();
+        let toml = toml::to_string_pretty(&values.merged)?;
+        fs::write(tempfile.path(), toml)?;
+
+        // Move config into place.
+        tempfile.persist(path)?;
+
+        // Clear runtime overrides, since we've just saved them.
+        values.runtime = Value::Table(Table::new());
+        values.file = values.merged.clone();
+        drop(values);
+
+        // Try to start config monitor, since this might have created the file.
+        if self.notify && self.watcher.is_none() {
+            self.watcher =
+                Watcher::new(self.config.clone(), self.event_handler.clone(), path.clone())?;
+
+            // Manually dispatch creation event.
+            self.event_handler.file_changed(&self.config);
+        }
+
+        Ok(())
+    }
 }
 
-impl Deref for Manager {
+impl<E> Deref for Manager<E> {
     type Target = Config;
 
     fn deref(&self) -> &Self::Target {
@@ -348,47 +410,6 @@ impl Config {
     {
         self.values.write().unwrap().reset(path)
     }
-
-    /// Persist the current runtime config to the config file.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use configory::Manager;
-    ///
-    /// # let tempdir = tempfile::tempdir().unwrap();
-    /// # let fake_home = tempdir.path().join("configory-docs-persist");
-    /// # unsafe { std::env::set_var("XDG_CONFIG_HOME", &*fake_home.to_string_lossy()) };
-    ///
-    /// let manager = Manager::new("configory", ()).unwrap();
-    /// manager.set(&["option"], 3);
-    /// manager.persist().unwrap();
-    ///
-    /// # let config_path = fake_home.join("configory").join("configory.toml");
-    /// # let config = std::fs::read_to_string(&config_path).unwrap();
-    /// # assert_eq!(&config, "option = 3\n");
-    /// ```
-    pub fn persist(&self) -> Result<(), Error> {
-        let path = match &self.path {
-            Some(path) => path,
-            None => return Err(Error::NoConfigDir),
-        };
-
-        // Ensure config directory exists.
-        let parent = path.parent().unwrap();
-        fs::create_dir_all(parent)?;
-
-        // Write updated config to tempfile.
-        let tempfile = NamedTempFile::new_in(parent)?;
-        let merged = &self.values.read().unwrap().merged;
-        let toml = toml::to_string_pretty(merged)?;
-        fs::write(tempfile.path(), toml)?;
-
-        // Move config into place.
-        tempfile.persist(path)?;
-
-        Ok(())
-    }
 }
 
 /// Configuration value store.
@@ -464,7 +485,9 @@ impl Values {
 ///     changes: Arc<AtomicU8>,
 /// }
 ///
-/// impl EventHandler<()> for MyEventHandler {
+/// impl EventHandler for MyEventHandler {
+///     type MessageData = ();
+///
 ///     fn ipc_changed(&self, _config: &Config) {
 ///         self.changes.fetch_add(1, Ordering::Relaxed);
 ///     }
@@ -484,7 +507,10 @@ impl Values {
 /// assert_eq!(manager.get::<_, i32>(&["integer"]), Ok(Some(3)));
 /// assert_eq!(changes.load(Ordering::Relaxed), 1);
 /// ```
-pub trait EventHandler<D>: Send + Sync + 'static {
+pub trait EventHandler: Send + Sync + 'static {
+    /// Type for custom IPC messages.
+    type MessageData;
+
     /// Handle configuration file changes.
     fn file_changed(&self, _config: &Config) {}
 
@@ -495,11 +521,13 @@ pub trait EventHandler<D>: Send + Sync + 'static {
     fn ipc_changed(&self, _config: &Config) {}
 
     /// Handle user-defined ipc messages.
-    fn ipc_message(&self, _config: &Config, _message: Message<D>) {}
+    fn ipc_message(&self, _config: &Config, _message: Message<Self::MessageData>) {}
 }
 
 /// Dummy handler when update notifications are undesired.
-impl EventHandler<()> for () {}
+impl EventHandler for () {
+    type MessageData = ();
+}
 
 /// Configuration monitor options.
 ///

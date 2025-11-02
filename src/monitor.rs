@@ -1,5 +1,6 @@
 //! File change monitor.
 
+use std::io::ErrorKind as IoErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -24,13 +25,13 @@ impl Watcher {
     ///
     /// This will automatically spawn two background threads to monitor for
     /// changes.
-    pub(crate) fn new<E, D>(
+    pub(crate) fn new<E>(
         config: Config,
         event_handler: Arc<E>,
         path: PathBuf,
     ) -> Result<Option<Self>, Error>
     where
-        E: EventHandler<D>,
+        E: EventHandler,
     {
         // Ensure path is not a special file.
         if path.metadata().is_ok_and(|metadata| !metadata.file_type().is_file()) {
@@ -45,14 +46,18 @@ impl Watcher {
 
         // Get all paths than require monitoring.
         let mut paths = Vec::with_capacity(2);
-        if let Ok(canonical) = path.canonicalize() {
-            // Watch original path if path is a symlink.
-            if path.symlink_metadata().is_ok_and(|meta| meta.file_type().is_symlink()) {
-                paths.push(path.clone());
-            }
+        match path.canonicalize() {
+            Ok(canonical) => {
+                // Watch original path if path is a symlink.
+                if path.symlink_metadata().is_ok_and(|meta| meta.file_type().is_symlink()) {
+                    paths.push(path.clone());
+                }
 
-            // Always watch canonicalized path.
-            paths.push(canonical);
+                // Always watch canonicalized path.
+                paths.push(canonical);
+            },
+            Err(err) if err.kind() == IoErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
         }
 
         // Create notify file monitor.
