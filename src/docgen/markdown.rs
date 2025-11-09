@@ -449,6 +449,26 @@ documentation.
         assert_eq(markdown, expected);
     }
 
+    #[test]
+    fn boxed() {
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Test {
+            /// Some boxed field.
+            field: Box<u8>,
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|field|Some boxed field|integer|`0`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
     fn assert_eq(markdown: String, expected: &'static str) {
         if markdown != expected {
             #[rustfmt::skip]

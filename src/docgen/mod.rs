@@ -63,6 +63,8 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
 
 /// This can be used to automatically derive [`Docgen`] for a type.
 ///
@@ -307,6 +309,24 @@ impl_simple_type!(String, &str, "text");
 impl_simple_type!(f32, f64, "float");
 impl_simple_type!(char, "character");
 impl_simple_type!(bool, "boolean");
+
+// Implement docgen for container types.
+macro_rules! impl_container_type {
+    ($ty:ident) => {
+        impl<T: Docgen + Debug> Docgen for $ty<T> {
+            fn doc_type() -> DocType {
+                T::doc_type()
+            }
+
+            fn format(&self) -> String {
+                T::format(self)
+            }
+        }
+    };
+}
+impl_container_type!(Box);
+impl_container_type!(Arc);
+impl_container_type!(Rc);
 
 impl<T: Docgen + Debug> Docgen for Option<T> {
     fn doc_type() -> DocType {
