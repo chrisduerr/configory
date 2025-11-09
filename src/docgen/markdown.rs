@@ -144,13 +144,27 @@ impl Markdown {
                 _ => &field.doc,
             };
 
-            // Ensure newlines don't break our pretty tables.
-            let doc = doc.replace("\n", "<br>");
+            // Ensure newlines don't break tables, while allowing paragraphs to reflow.
+            let mut escaped_doc = String::with_capacity(doc.len());
+            let mut newline_count = 0;
+            for c in doc.chars() {
+                if c == '\n' {
+                    newline_count += 1;
+                } else {
+                    match newline_count {
+                        0 => (),
+                        1 => escaped_doc.push(' '),
+                        _ => escaped_doc.push_str("<br><br>"),
+                    }
+                    newline_count = 0;
+                    escaped_doc.push(c);
+                }
+            }
 
             markdown.push('|');
             markdown.push_str(&field.ident);
             markdown.push('|');
-            markdown.push_str(&doc);
+            markdown.push_str(&escaped_doc);
             markdown.push('|');
             markdown.push_str(&leaf.type_name);
             markdown.push_str("|`");
@@ -415,13 +429,19 @@ documentation.
             /// Some random field.
             ///
             /// With loads of doc.
+            /// And a multi-line paragraph.
+            ///
+            ///
+            ///
+            /// Third paragraph.
             field: u8,
         }
 
+        #[rustfmt::skip]
         let expected = "\
 |Name|Description|Type|Default|
 |-|-|-|-|
-|field|Some random field.<br><br>With loads of doc.|integer|`0`|
+|field|Some random field.<br><br>With loads of doc. And a multi-line paragraph.<br><br>Third paragraph.|integer|`0`|
 ";
 
         let markdown = Markdown::new().format::<Test>();
