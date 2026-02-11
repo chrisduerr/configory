@@ -340,3 +340,29 @@ impl<T: Docgen + Debug> Docgen for Option<T> {
         }
     }
 }
+
+impl<T: Docgen + Debug> Docgen for Vec<T> {
+    fn doc_type() -> DocType {
+        match T::doc_type() {
+            DocType::Leaf(leaf) => DocType::Leaf(Leaf::new(format!("[{}]", leaf.type_name))),
+            DocType::Table(_) => DocType::Leaf(Leaf::new("[???]")),
+        }
+    }
+
+    fn format(&self) -> String {
+        if self.is_empty() {
+            return "[]".into();
+        }
+
+        let mut formatted = String::new();
+        formatted.push('[');
+        for value in self {
+            formatted.push_str(&T::format(value));
+            formatted.push_str(", ");
+        }
+        formatted.truncate(formatted.len() - 2);
+        formatted.push(']');
+
+        formatted
+    }
+}

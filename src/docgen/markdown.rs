@@ -489,6 +489,52 @@ documentation.
         assert_eq(markdown, expected);
     }
 
+    #[test]
+    fn vec_default_empty() {
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Test {
+            /// Some vec field.
+            field: Vec<u8>,
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|field|Some vec field|[integer]|`[]`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
+    #[test]
+    fn vec_default_full() {
+        #[allow(unused)]
+        #[derive(Docgen)]
+        struct Test {
+            /// Some vec field.
+            field: Vec<String>,
+        }
+
+        impl Default for Test {
+            fn default() -> Self {
+                Self { field: vec!["one".into(), "xxx".into()] }
+            }
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|field|Some vec field|[text]|`[\"one\", \"xxx\"]`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
     fn assert_eq(markdown: String, expected: &'static str) {
         if markdown != expected {
             #[rustfmt::skip]
