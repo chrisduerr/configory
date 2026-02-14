@@ -535,6 +535,100 @@ documentation.
         assert_eq(markdown, expected);
     }
 
+    #[test]
+    fn flatten() {
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Test {
+            /// This is never used.
+            #[docgen(flatten)]
+            field_outer: Inner,
+        }
+
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Inner {
+            /// Some nested field.
+            field_inner: u8,
+            /// Multiple nested fields!
+            other: u16,
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|field_inner|Some nested field|integer|`0`|
+|other|Multiple nested fields!|integer|`0`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
+    #[test]
+    fn skip() {
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Test {
+            /// This is visible.
+            visible: u8,
+            /// This is hidden.
+            #[docgen(skip)]
+            hidden: u8,
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|visible|This is visible|integer|`0`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
+    #[test]
+    fn doc_type() {
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Test {
+            #[docgen(doc_type = "text")]
+            dt: u8,
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|dt||text|`0`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
+    #[test]
+    fn default() {
+        #[allow(unused)]
+        #[derive(Docgen, Default)]
+        struct Test {
+            #[docgen(default = "99")]
+            dt: u8,
+        }
+
+        let expected = "\
+|Name|Description|Type|Default|
+|-|-|-|-|
+|dt||integer|`99`|
+";
+
+        let markdown = Markdown::new().format::<Test>();
+
+        assert_eq(markdown, expected);
+    }
+
     fn assert_eq(markdown: String, expected: &'static str) {
         if markdown != expected {
             #[rustfmt::skip]

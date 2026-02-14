@@ -100,6 +100,7 @@ fn field_inserts<T>(fields: &Punctuated<Field, T>) -> (TokenStream2, bool) {
         // Extract field attributes.
         let mut doc = String::new();
         let mut doc_type = None;
+        let mut flatten = false;
         let mut default = None;
         for attr in field.attrs.iter() {
             let path = attr.path();
@@ -127,19 +128,20 @@ fn field_inserts<T>(fields: &Punctuated<Field, T>) -> (TokenStream2, bool) {
                     match (&*parsed_attr.ident, parsed_attr.param) {
                         ("doc_type", Some(param)) => doc_type = Some(param),
                         ("default", Some(param)) => default = Some(quote! { #param.into() }),
+                        ("flatten", None) => flatten = true,
                         ("skip", None) => continue 'fields,
                         (ident @ ("doc_type" | "default"), None) => {
                             let msg = format!("Missing parameter for attribute `{ident}`");
                             return (Error::new(attr.span(), msg).to_compile_error(), false);
                         },
-                        (ident @ "skip", Some(_)) => {
+                        (ident @ ("skip" | "flatten"), Some(_)) => {
                             let msg = format!("Unexpected parameter for attribute `{ident}`");
                             return (Error::new(attr.span(), msg).to_compile_error(), false);
                         },
                         (ident, _) => {
                             let msg = format!(
-                                "Invalid attribute `{ident}`; expected `doc_type`, `default`, or \
-                                 `skip`"
+                                "Invalid attribute `{ident}`; expected `doc_type`, `default`, \
+                                 `flatten`, or `skip`"
                             );
                             return (Error::new(attr.span(), msg).to_compile_error(), false);
                         },
@@ -162,6 +164,24 @@ fn field_inserts<T>(fields: &Punctuated<Field, T>) -> (TokenStream2, bool) {
                         ident: #literal.into(),
                         doc: #doc.into(),
                     });
+                });
+            },
+            None if flatten => {
+                stream.extend(quote! {
+                    let doc_type = <#ty>::doc_type();
+                    match doc_type {
+                        configory::docgen::DocType::Leaf(_) => {
+                            table.push(configory::docgen::Field {
+                                doc_type,
+                                ident: #literal.into(),
+                                default: #default,
+                                doc: #doc.into(),
+                            });
+                        },
+                        configory::docgen::DocType::Table(flat_table) => {
+                            table.fields.extend(flat_table.fields);
+                        },
+                    }
                 });
             },
             None => {
